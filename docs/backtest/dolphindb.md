@@ -108,15 +108,18 @@ DolphinDB 对 dataType=1 快照表的字段要求见
 [股票回测配置](https://docs.dolphindb.com/zh/plugins/backtest/stock.html)。Arena 使用日线自行生成
 符合该结构的两条快照；价格和盘口生成规则属于 Arena Runtime 契约，不是 DolphinDB 自动行为。
 
-Runtime 从 `dataset_query` filters 后的表生成消息。每个有效交易日、每只代码生成两条快照：
+Runtime 从第二阶段加载的完整股票范围、未经 `dataset_query.filters` 筛选的行情表生成消息。
+filters 只约束用于选股的历史截面，不会删除已经调出的股票的可交易快照。每个有效交易日、每只代码生成两条快照：
 
 | 时间 | `lastPrice` |
 | --- | --- |
 | `09:30:00` | 当日 `open` |
 | `15:00:00` | 当日 `close` |
 
-`adj=null` 不复权；`hfq` 使用 `adj_factor` 后复权；`qfq` 使用每只代码最后一个 `adj_factor` 归一
-后前复权。`open/low/high/close/upLimitPrice/downLimitPrice/prevClosePrice` 使用相同调整系数。源
+`adj=null` 不复权；`hfq` 使用 `adj_factor` 后复权；`qfq` 使用传入行情范围内、每只代码时间最大的
+那一行 `adj_factor` 归一后前复权，不依赖物理行顺序。加载范围改变可能改变该基准；比较不同研究区间
+时必须核对基准日期和复权因子，不能假定绝对价格不变。
+`open/low/high/close/upLimitPrice/downLimitPrice/prevClosePrice` 使用相同调整系数。源
 `up_limit/down_limit` 允许为空：Runtime 会结合 `high/low` 和 `pre_close` 生成回退值，具体规则见
 “停牌、缺价和无法退出”。回退完成后的必要价格为空时，该日线不会生成快照。
 
@@ -238,12 +241,16 @@ orderBookMatchingRatio = 1.0   # 使用对手方订单簿数量的 100%
 4. 本次盘口容量为对应一档数量乘 `orderBookMatchingRatio`，当前即近似十亿股；
 5. 仍需通过涨跌停、现金、可卖数量、交易费用和插件风控；
 6. 可成交部分立即产生 `onTrade`，剩余数量保留为 open order；
-7. 后续 15:00、下一交易日 09:30 等快照到达时，剩余订单用**新快照的盘口**重新执行上述判断，
-   直至全成、撤单、拒绝或回测结束成为 `-3`。
+7. 后续快照到达时，挂单使用新盘口检查限价是否可成交及可成交数量；当前模式下这一挂单路径
+   **以原委托限价成交**，不是再次以新买一/卖一价成交。即时订单与已有挂单的成交定价不能混用。
+   日终未成交部分可失效为 `-3`，不能假设订单自动跨日保留。
 
 多笔订单同时可成交时仍遵循价格优先、同价时间优先。`latency>0` 时，订单到达时间是委托时间加
 延时；当前行情只有 09:30/15:00 两个触发点，若延时后的时刻没有新行情，订单会在不早于到达时间
 的下一条行情事件中处理，不能再声称于原 timestamp 成交。
+例如买单限价 10、到达后的下一张卖一为 9，挂单路径可能以 10 成交，而非 9；这与上述官方
+撮合教程的“未成交订单”规则一致。2026-09-05 使用 Backtest/MatchingEngineSimulator 2.00.16.32
+验证了即时成交、延迟挂单、部分成交与日终失效；更新插件后应重新验证这些边界。
 
 Runtime 的 `backtest::order_target` 买入限价直接取当前 `offerPrice[0]`，卖出限价直接取当前
 `bidPrice[0]`。所以在 `latency=0`、一档数量足够且通过账户/风控检查时，它提交的订单对当前盘口
@@ -258,7 +265,8 @@ signal = backtest::getLastData(context, message, false)
 ```
 
 当 `latency=0` 且限价覆盖当前对手盘时，新订单可以立即使用 09:30 最新盘口成交。若未成交则继续
-挂起并等待 15:00 或更晚行情；15:00 回调提交但未立即成交的订单，当日没有下一条合成快照。
+挂起并等待后续行情或日终失效。**15:00 有行情和回调，不代表仍能提交新订单**：当前股票插件将
+15:00 回调内提交的新订单以非交易时间拒绝（`4 → -1`）；此前已接受的挂单仍可能在收盘快照撮合。
 订单 timestamp 与成交 timestamp 可以相同，但仍不能把“已提交”当作“已成交”。
 
 ### 从因子日期到成交日期的完整时间线
@@ -277,11 +285,16 @@ t 日 09:30
   -> onOrder/onTrade 按实际状态变化穿插触发
 t 日 15:00
   -> 引擎接收以 t 日 close 构造的快照并更新订单簿
-  -> onSnapshot，再处理已有挂单和新订单产生的订单/成交事件
+  -> 本快照触发 onSnapshot 和已有挂单撮合，订单/成交事件以插件实际回调顺序为准
+  -> 此时提交的新订单会被当前股票插件拒绝
   -> afterTrading(context)
 最后一个交易日结束
   -> finalize(context)
 ```
+
+Runtime 用官方快照 `symbol="END"` 控制消息结束回放，先派发最后一个 timestamp 缓冲区，再结束引擎。
+该控制消息不进入策略快照回调、不提供盘口、不额外成交；最后一天也必须有完整的两次快照回调、
+一次 `afterTrading`，整个运行仅一次 `finalize`。此修正不重写已经生成的历史结果，旧运行需重新回测。
 
 在 09:30：
 
@@ -615,6 +628,10 @@ Backtest::cancelOrder(context.engine, , , "orderLabel")
 | `-2` | 撤单拒绝 | 否 | 原订单可能仍活动，重新查询 `getOpenOrders` |
 | `-3` | 日终或回测结束时未成交失效 | 是 | 计入未成交失效，不能当成已撤单或仅发生于回测最后一天 |
 
+此表是完整订单状态集合，并不保证每个状态都会派发 `onOrder`。当前 2.00.16.32 插件实测的日终
+`-3` 只写入 `getTradeDetails` / `trade_details`，没有对应 `onOrder` 事件。维护 pending 状态时必须
+结合 `getOpenOrders` 对账，运行完成后从订单事件表核对终态，不能一直等待 `onOrder(-3)`。
+
 ```dos
 def onOrder(mutable context, orders) {
     for (event in orders) {
@@ -632,8 +649,9 @@ def onOrder(mutable context, orders) {
 `outputOrderInfo=true` 时若结果表实际出现 `orderInfo`，可用其文本辅助排查；否则只能结合提交前记录、
 持仓、现金、挂单和日志诊断。
 
-标准处理顺序是：提交后保存 orderId；`status in [4,0]` 时禁止对同一代码重复下目标；每日开始撤销
-旧挂单；收到 `2`/`1`/`-1`/`-3` 后清理 pending；收到 `-2` 时以 `getOpenOrders` 的真实结果为准。
+标准处理顺序是：提交后保存 orderId；`status in [4,0]` 时避免对同一代码重复下目标；每日开始先查
+真实活动订单，再决定是否撤销。收到 `2`/`1`/`-1` 后清理 pending；`-3` 可能无回调，需从活动订单
+及最终事件表核对失效；收到 `-2` 时以 `getOpenOrders` 的真实结果为准。
 部分成交后，任何依赖成交数量或持仓均价的状态都只能在 `onTrade` 后按真实持仓更新，不能在
 `submitOrder` 返回时设置。
 
@@ -671,10 +689,11 @@ def onTrade(mutable context, trades) {
 
 ## 动态数据域
 
-合成 `message` 来自第二阶段 filters 后的数据。被 filter 删除或因必要行情缺失而没有快照的代码，
-当日不能通过 `order_target*` 调整。第一阶段区间候选并集不代表逐日有效集合；第二阶段必须重新提供
-逐日状态，决策只读取严格早于当前日期的截面。需要保留失效代码以继续观察或退出时，不得在第二阶段
-提前删行。完整契约见 `arena://docs/backtest/dynamic-pool`。
+合成 `message` 来自第二阶段完整范围、filters 前的行情。第二阶段 filter 不会删除行情快照；没有
+进入第一阶段候选并集或缺少必要行情的代码才可能没有快照，进而无法通过 `order_target*` 调整。
+第一阶段区间候选并集不代表逐日有效集合；第二阶段必须重新提供逐日状态，决策只读取严格早于当前
+日期的截面。观察失效代码时可用 `getLastData(..., false)` 读取 filters 前数据，但还须核对持仓与
+当前快照。完整契约见 `arena://docs/backtest/dynamic-pool`。
 
 历史财务字段和成员数据是否经过供应商修订，不由回调日期边界保证。Arena 当前不冻结每次运行的输入
 快照；数据来源、填充和 point-in-time 边界见 `arena://docs/overview/dsl`。
@@ -691,6 +710,10 @@ downLimitPrice = down_limit 非 NULL ? down_limit : min(low, round(pre_close * 0
 之后 Runtime 才检查同一代码日期的 `open`、`low`、`high`、`close`、最终 `upLimitPrice`、最终
 `downLimitPrice` 和 `pre_close`。这些**最终用于生成消息的字段**必须全部非 NULL；任一字段无有效值，
 该证券当天的 09:30 与 15:00 快照都不会生成。不能仅凭源 `up_limit/down_limit` 缺失判断快照缺失。
+
+这是日线合成模型的限制：即使 open 有值，收盘字段缺失也会使开盘快照缺席；缺少官方涨跌停价时，
+回退值还使用了当日 high/low，不能用于宣称精确复现开盘时已知的交易边界。要检验严格无未来数据，
+必须另外检查这些基础行情条件，不能只检查回调有没有引用未来字段。
 
 后果是：
 

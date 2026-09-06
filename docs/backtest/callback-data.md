@@ -55,6 +55,10 @@ totalVolume, totalValue, direction, tradeTime, orderPrice, label
 收到 `-2` 后必须重新查询活动订单。任何目标调整都应基于真实持仓和活动订单，不能根据提交次数推断
 持仓变化。
 
+状态表不是“所有状态都有回调”的承诺。当前 2.00.16.32 插件的日终 `-3` 可只出现在
+`trade_details`，不会触发 `onOrder`；pending 订单需与 `getOpenOrders` 和最终事件表核对。
+15:00 的行情仍会触发 `onSnapshot`，但此时新提交的订单被当前股票插件判为非交易时间并拒绝。
+
 ## 拒单诊断边界
 
 当前保证的是订单事件字段和 `status=-1`。MCP 不会把拒单自动扩展成包含目标金额、可用现金快照和

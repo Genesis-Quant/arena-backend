@@ -645,7 +645,7 @@ def backtest_metrics(parameters: dict[str, Any], portfolios: pd.DataFrame) -> di
         wealth = np.cumprod(1 + returns)
         growth = wealth[-1]
         annual_return = growth ** (annual_trading_days / len(returns)) - 1 if growth > 0 else np.nan
-        annual_volatility = np.std(returns[1:], ddof=0) * np.sqrt(annual_trading_days) if len(returns) > 1 else np.nan
+        annual_volatility = np.std(returns[1:], ddof=0) * np.sqrt(annual_trading_days) if len(returns) > 2 else np.nan
         sharpe_ratio = (annual_return - risk_free_rate) / annual_volatility if annual_volatility != 0 else np.nan
         maximum_drawdown = np.min(wealth / np.maximum.accumulate(np.concatenate(([1.0], wealth)))[1:] - 1)
         period_rate = (1 + risk_free_rate) ** (1 / annual_trading_days) - 1

@@ -645,7 +645,7 @@ def factor_metrics(
                 )
                 annual_return = (
                     clean_number(growth ** (252 / len(returns)) - 1)
-                    if growth is not None and len(returns)
+                    if growth is not None and growth >= 0 and len(returns)
                     else None
                 )
             else:
@@ -722,7 +722,7 @@ def return_growth(
         wealth = (
             np.exp(values.cumsum())
             if return_kind == "log"
-            else np.exp(np.log1p(values).cumsum())
+            else np.cumprod(1 + values)
         )
     growth = clean_number(wealth[-1])
     if growth is None:

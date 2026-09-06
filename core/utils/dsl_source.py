@@ -562,7 +562,7 @@ class BacktestApplicationRequest(BaseModel):
     dataset_query: ManagedDatasetQueryRequest
     adj: Literal["hfq", "qfq"] | None
     annual_trading_days: int = Field(ge=1)
-    risk_free_rate: float = Field(allow_inf_nan=False)
+    risk_free_rate: float = Field(gt=-1, allow_inf_nan=False)
     utils: str
     callbacks: dict[str, str]
 
