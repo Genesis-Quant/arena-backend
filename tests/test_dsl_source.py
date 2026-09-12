@@ -12,6 +12,8 @@ from core.utils.dsl_source import (
     DslSource,
     FactorAnalysisApplicationRequest,
     QueryApplicationRequest,
+    OptimizationApplicationRequest,
+    SensitivityApplicationRequest,
     compile_application_payload,
     compile_dsl_source,
     compile_factor_dsl_source,
@@ -130,6 +132,45 @@ def backtest_request() -> dict:
         "utils": "",
         "callbacks": CALLBACKS,
     }
+
+
+def test_snapshot_backtest_preserves_sources_and_compiles_market_source():
+    raw = backtest_request()
+    raw["market_source"] = "snapshot"
+    raw["config"]["syntheticSpread"] = 0
+    request = BacktestApplicationRequest.model_validate(raw)
+    assert request.stored_payload() == raw
+    compiled = compile_application_payload("backtest", raw)
+    assert compiled["market_source"] == "snapshot"
+    assert "dsl_source" not in compiled["dataset_query"]
+    assert request.stored_payload()["dataset_query"]["dsl_source"] == raw["dataset_query"]["dsl_source"]
+
+
+@pytest.mark.parametrize("field,value", [("adj", "hfq"), ("syntheticSpread", 0.001), ("stockDividend", [])])
+def test_snapshot_rejects_conflicts_at_request_boundary(field, value):
+    raw = backtest_request()
+    raw["market_source"] = "snapshot"
+    if field == "adj":
+        raw[field] = value
+    else:
+        raw["config"][field] = value
+    with pytest.raises(ValidationError, match="真实快照"):
+        BacktestApplicationRequest.model_validate(raw)
+
+
+@pytest.mark.parametrize("kind", ["fee_analysis", "sensitivity", "optimization"])
+def test_snapshot_rejects_parameter_studies_before_submission(kind):
+    raw = backtest_request()
+    raw.update(market_source="snapshot", params={"window": 20})
+    if kind == "optimization":
+        raw.update(parameter_space={"window": [10,20]}, algorithms=["random_search"],
+                   start_date="2020-06-01", end_date="2020-12-31", lookback_period="1M", holding_period="1W")
+        model = OptimizationApplicationRequest
+    else:
+        raw.update(analysis_type=kind, cases=[{"params": raw["params"], "commission": 0.0003}])
+        model = SensitivityApplicationRequest
+    with pytest.raises(ValidationError, match="真实快照"):
+        model.model_validate(raw)
 
 
 def test_query_sources_are_stored_verbatim_and_only_active_source_is_compiled() -> None:

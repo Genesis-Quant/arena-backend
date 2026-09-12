@@ -27,7 +27,9 @@ from core.apps.backtest.services import (
     create_backtest_project,
     create_backtest_optimization,
     submit_project_backtest,
+    submit_backtest_batch,
 )
+from core.apps.schemas import BatchRunItem
 from core.apps.factor.models import FactorProject, FactorVersion
 from core.apps.factor.services import (
     OUTPUT_FILES as FACTOR_OUTPUT_FILES,
@@ -241,8 +243,9 @@ def factor_parameters(
     })
 
 
-def backtest_parameters(cash: float = 1_000_000) -> BacktestApplicationRequest:
+def backtest_parameters(cash: float = 1_000_000, *, market_source: str | None = None) -> BacktestApplicationRequest:
     return BacktestApplicationRequest.model_validate({
+        **({"market_source": market_source} if market_source is not None else {}),
         "config": {
             "cash": cash,
             "commission": 0.0003,
@@ -359,12 +362,14 @@ def test_factor_draft_reuses_workspace_until_version_is_saved(
     assert len(submissions) == 3
 
 
+@pytest.mark.parametrize("market_source", [None, "snapshot"])
 def test_backtest_draft_reuses_workspace_until_version_is_saved(
     session: Session,
     user: User,
     submissions: list[dict[str, object]],
+    market_source,
 ) -> None:
-    initial_parameters = backtest_parameters()
+    initial_parameters = backtest_parameters(market_source=market_source)
     created = create_backtest_project(
         session,
         user.id,
@@ -381,14 +386,14 @@ def test_backtest_draft_reuses_workspace_until_version_is_saved(
         session,
         user.id,
         project.id,
-        backtest_parameters(1).stored_payload(),
+        backtest_parameters(1, market_source=market_source).stored_payload(),
     )
     original_workspace_key = first.workspace_key
     second = submit_project_backtest(
         session,
         user.id,
         project.id,
-        backtest_parameters(2).stored_payload(),
+        backtest_parameters(2, market_source=market_source).stored_payload(),
     )
 
     assert second.id == first.id
@@ -412,7 +417,7 @@ def test_backtest_draft_reuses_workspace_until_version_is_saved(
         session,
         user.id,
         project.id,
-        backtest_parameters(3).stored_payload(),
+        backtest_parameters(3, market_source=market_source).stored_payload(),
     )
 
     assert third.id != first.id
@@ -422,6 +427,29 @@ def test_backtest_draft_reuses_workspace_until_version_is_saved(
     assert versions[0].workflow_workspace_id == first.id
     assert versions[1].workflow_workspace_id == third.id
     assert len(submissions) == 3
+    for version in versions:
+        assert version.parameters.get("market_source") == market_source
+        assert version.parameters["dataset_query"]["dsl_source"] == initial_parameters.stored_payload()["dataset_query"]["dsl_source"]
+    runtime_json = json.loads(workspace_input_file("backtest", third.workspace_key).read_text(encoding="utf-8"))
+    assert runtime_json["market_source"] == (market_source or "daily")
+    assert "dsl_source" not in runtime_json["dataset_query"]
+
+
+def test_batch_keeps_each_market_source_and_retry_identity(session, user, monkeypatch):
+    submitted = []
+    monkeypatch.setattr("core.apps.backtest.services.submit_workspaces_now", submitted.extend)
+    monkeypatch.setattr("core.apps.backtest.services.finalize_auto_save_workspaces_now", lambda ids: None)
+    created = create_backtest_project(session, user.id, "snapshot batch", backtest_parameters())
+    items = [BatchRunItem[BacktestApplicationRequest](client_id=source, parameters=backtest_parameters(market_source=source))
+             for source in ("daily", "snapshot")]
+    accepted = submit_backtest_batch(session, user.id, created["id"], items)
+    assert len(submitted) == 2
+    for item in accepted:
+        attempt = current_workflow_attempt(session, item["workspace_id"])
+        assert attempt.input_json["market_source"] == item["client_id"]
+    repeated = submit_backtest_batch(session, user.id, created["id"], items)
+    assert repeated == accepted
+    assert len(submitted) == 2
 
 
 @pytest.mark.parametrize(

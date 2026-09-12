@@ -9,6 +9,7 @@
 | --- | --- | --- |
 | `message` | TABLE | `schema(message).colDefs` 或 `columnNames(message)` |
 | `getLastData` / `getHistoryData` | TABLE | 按列读取；只含当前消息日期以前的数据 |
+| `getMinuteHistory(context,msg,codes,count)` | TABLE | 仅 snapshot；每证券最近 count 根已完成分钟，time 为窗口结束时刻，不晚于当前回调 |
 | 全部持仓 | TABLE | `schema(Backtest::getPosition(engine)).colDefs` |
 | 单证券持仓 | DICTIONARY | 先读取 `.keys()`，再按 key 访问 |
 | `orders` | ANY VECTOR | 遍历每个 STRING→ANY DICTIONARY 事件 |
@@ -19,7 +20,7 @@
 
 ## 核心字段
 
-`message` 的核心列是 `symbol`、`timestamp`、`lastPrice`、涨跌停价、昨收以及一档买卖价量。它不包含
+`message` 的核心列是 `symbol`、`timestamp`、`lastPrice`、涨跌停价、昨收以及买卖价量（daily 一档合成，snapshot 五档真实）。它不包含
 `dataset_query` 的 derivatives；历史字段必须通过数据 helper 读取。
 
 `orders` 事件当前可依赖的核心 key：

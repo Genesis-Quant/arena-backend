@@ -296,7 +296,8 @@ def register_project_tools(server: MCPServer) -> None:
                     "完整 Backtest 请求；codes_query/dataset_query 均支持双源码，"
                     "各自 language 指定活动版本。必填 dataset_query/callbacks，"
                     "Backend 会在调度前向 dataset_query 注入托管的 "
-                    "stock_pool_member，保存的编辑器源码不变。所有顶层字段均必填，"
+                    "stock_pool_member，保存的编辑器源码不变。market_source 可省略为 daily；"
+                    "snapshot 使用真实五档，要求 adj=null、syntheticSpread=0；其它顶层字段必填，"
                     "字段类型和构造约束见 Backtest Schema。"
                 )
             ),

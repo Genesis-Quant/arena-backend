@@ -8,12 +8,92 @@
 ## 先看能力边界
 
 - 日线输入每天只生成 09:30 和 15:00 两个合成快照；
-- 盘口只有一档且数量近似无限，不包含真实深度、成交容量或市场冲击；
+- `daily` 盘口只有一档且数量近似无限，不包含真实深度、成交容量或市场冲击；
+- `snapshot` 使用真实五档价量与原价，分钟决策仍由 onSnapshot 策略代码控制；
 - `adj` 只调整执行价格链路，不调整查询字段和历史 helper；
-- 历史 helper 保证 `date(time) < 当前消息日期`，但不保证供应商数据不可回溯修订；
+- 日线 `getHistoryData/getLastData` 保证 `date(time) < 当前消息日期`；分钟历史见下文；二者都不保证供应商数据不可回溯修订；
 - 订单号只表示提交，订单终态、成交、现金和持仓必须分别核验。
 
-因此结果只能按当前合成撮合模型解释，不能直接视为真实市场可复制结果。
+两种来源都没有市场冲击模拟，结果不能直接视为真实市场可复制结果。下文标明“日线/合成”的盘口、
+时序、无限深度和参考价格回退规则只适用于 `market_source="daily"`。
+
+## 真实快照与分钟历史
+
+`market_source="snapshot"` 读取 `dfs://StockSnapshot/snapshot`，不新增业务表或工作流类型。
+它使用与日线模式相同的固定插件配置及四张结果 Parquet。`adj` 必须为 null、`syntheticSpread`
+为零，不注入分红/送转/除权补偿；跨除权日出现的原价跳变会保留在持仓估值和日收益里。
+
+### 原始字段到 message
+
+| StockSnapshot / CoreData | message 字段 | 约定 |
+| --- | --- | --- |
+| Market + SecurityID | symbol、symbolSource | SH→XSHG，SZ→XSHE；例如 600020.XSHG |
+| TradeDate + TradeTime | timestamp | TIMESTAMP，交易所本地时间、不含时区；精度毫秒 |
+| LastPrice | lastPrice | 原始 DOUBLE，NULL/NaN/无穷/非正值不回放，日志统计剔除数 |
+| BidPrice1…5、BidVolume1…5 | bidPrice、bidQty | 五档 DOUBLE[] / LONG[]，买一到买五，真实数量，不乘放大倍数 |
+| AskPrice1…5、AskVolume1…5 | offerPrice、offerQty | 五档 DOUBLE[] / LONG[]，卖一到卖五，真实数量 |
+| 同代码同日 pre_close/up_limit/down_limit | prevClosePrice/upLimitPrice/downLimitPrice | 必须为有效正数，否则报具体代码、日期、字段；不以当日 high/low 推算 |
+| 无可靠的区间主动买卖成交量 | totalBidQty/totalOfferQty | 固定 LONG 零；不是将五档数量求和 |
+
+缺失或非正价格/数量的盘口档位置零。涨跌停导致的单边空盘口是合法行情，不会因另一侧无量而丢弃
+整条快照。回调中的数组列按 `message.bidPrice[level][row]` 访问，`level=0` 为买一。
+`matchingRatio=0` 禁用按区间成交量补量；`orderBookMatchingRatio=1` 使用实际订单簿容量，不生成
+虚假深度。对手价不满足限价条件时不成交，有限容量可能部分成交。快照采样不能还原真实排队顺序。
+
+### 回放与日线历史
+
+先查询完整区间的日线 DSL，候选代码由静态 codes 或第一阶段期间并集确定。快照从该完整候选域读取，
+不受第二阶段 filters 影响；因此调出股票仍能接收后续行情。Python 仅调度，转换及分钟聚合都在 DOS。
+按交易日、五分钟时间块读取及追加，同一个 timestamp 的所有证券不会拆批；一个引擎运行完整区间，
+跨块不重新初始化，最终只追加一次 END 控制消息，不增加额外成交量。插件自身的日终订单失效规则
+仍有效，不能因引擎连续就假定委托跨日有效。
+
+创建引擎前先聚合检查完整请求区间的行情覆盖，一次性报告所有缺行情或没有有效 LastPrice 的交易日，
+不会先回放前面的日期再发现后面的日期缺失，也不静默缩短区间。检查只返回每日统计和时间边界，
+不加载完整区间原始快照。个别证券没有报价不等于已证实停牌。预期日期沿用 CoreData 市场交易日期，
+不额外补造交易日历。日线基准独立生成09:30/15:00
+快照用于日报告，不新增分钟基准；基准可能出现在回调批次，不能把它作为可下单股票。
+
+`onSnapshot` 接收每个完整时间戳批次，不会改成每分钟回调；同一批次可能只有部分证券。策略应自己
+控制分钟决策频率。`getHistoryData/getLastData` 仍只读取当前回调日之前的日线 DSL 数据，绝不因为
+真实快照模式而开放当日完整 high/low/close。
+
+### getMinuteHistory(context, msg, codes, count)
+
+仅在真实快照的 onSnapshot 内使用，msg 必须是本次回调消息。codes 为非空 `.XSHG/.XSHE` 代码向量，
+只能取当前候选域内证券；count 为正整数，表示**每只证券**最多返回多少根已完成的一分钟数据。
+不足时返回实际可用记录，不前向填充，不补造无交易分钟或午休 K 线；日期历史范围受本次日线查询的
+lookback 和实际快照覆盖限制。返回 TABLE 按 time/code 排序：
+
+| 字段 | 类型 | 语义 |
+| --- | --- | --- |
+| time | TIMESTAMP | 分钟窗口结束时刻；必须不晚于当前回调 timestamp |
+| code | SYMBOL | 标准证券代码 |
+| open/high/low/close | DOUBLE | 分钟内有效 LastPrice 的首/最高/最低/最后值，不使用日累计 OpenPrice/HighPrice/LowPrice；整分钟没有有效价格则不生成 K 线 |
+| volume | LONG | 每证券每日 TotalVolume 差分后，窗口内求和；窗口内个别 LastPrice 无效不会丢弃其累计成交增量 |
+| amount | DOUBLE | 每证券每日 TotalAmount 差分后，窗口内求和；不累加近似 Amount 列 |
+
+上午09:30–11:30和下午13:00–15:00分别分桶；09:30/13:00的边界记录归入各自第一根（结束09:31/13:01），
+其余整分钟边界归入以该时刻结束的窗口，包括11:30和15:00。例如09:31:30回调最多看到结束09:31的
+分钟，不得看到09:32窗口。读数据时保留当日前置记录用于累计差分；如果当日第一条记录之前没有基线，
+该条累计数仅作基线，其未知增量不算入第一根。累计数日内倒退会报错，而不是制造负成交量。
+
+历史只查询截至当前完整分钟的数据；按证券、日期保留缓存和读取进度，切换或增减代码集合不会清空
+其他证券的缓存。同进度证券合并补读新增区间，保留各证券最后一条原始记录作为累计量差分基线，
+复用已完成分钟，并仅回收本次请求不再需要的证券历史日。它是
+**快照采样聚合**，不保证与逐笔成交生成的分钟 K 线相同。
+
+### 下单取价与执行隔离
+
+调用用户 onSnapshot 前，Runtime 将当前批次的最新有效报价写入本次执行专属缓存。
+`order_target/order_target_value` 签名不变：真实模式可对本批次之外、但当日截至当前回调已到达报价
+的证券下单；没有当日报价、报价晚于当前回调，或所需买卖方向一档无有效价格/数量时，明确拒绝。
+目标市值仍用该最新可见 lastPrice 换算数量，委托时间为当前回调时间。
+
+缓存可取价不表示插件立即成交：标的不在当前批次时，委托可能等待该证券下一条行情；延迟也不会
+合成缺失行情。缓存每日清空，每次运行重置，不沿用前一日或上一执行的报价。状态不注入用户 context。
+
+普通回测和批量队列可用，真实模式手续费分析、敏感性和调优创建会被拒绝；历史报告继续可看。
 
 ## 官方文档
 
@@ -232,7 +312,7 @@ matchingRatio = 0.0            # 最新成交价/区间成交量路径不分配�
 orderBookMatchingRatio = 1.0   # 使用对手方订单簿数量的 100%
 ```
 
-因此当前实际只按一档合成订单簿撮合，不会按 `lastPrice` 或日线 `volume` 另外分配成交量。对一笔
+因此两种来源都只按订单簿撮合，不会按 `lastPrice` 或日线 `volume` 另外分配成交量。以下一档容量描述仅针对 daily。对一笔
 `latency=0` 的普通限价单，处理顺序为：
 
 1. `submitOrder` 在 t 时刻到达撮合引擎，读取该 symbol 最近一条快照的买一/卖一；
@@ -463,7 +543,7 @@ callbacks JSON 必须恰好包含这八项。未使用回调可以返回 NULL。
 order_target(mutable context, msg, stockCode, targetAmount, orderLabel="order_target")
 ```
 
-- `stockCode` 必须存在于当前 message；
+- `daily` 的 `stockCode` 必须存在于当前 message；`snapshot` 也可使用当前执行的当日最新报价缓存（见本页真实快照契约）；
 - `targetAmount` 是非负整数目标股数，不是本次买卖差额；
 - 函数用 `Backtest::getPosition` 读取真实多头持仓并计算差额；
 - 买入限价使用当前 `offerPrice[0]`，卖出限价使用当前 `bidPrice[0]`；
@@ -476,7 +556,7 @@ order_target(mutable context, msg, stockCode, targetAmount, orderLabel="order_ta
 order_target_value(mutable context, msg, stockCode, targetValue, orderLabel="order_target_value")
 ```
 
-- 使用当前快照 `lastPrice` 将非负目标市值换算为目标股数；
+- 使用当前可见报价 `lastPrice` 将非负目标市值换算为目标股数；
 - 增减仓数量按 100 股向下取整；
 - `targetValue=0` 精确清仓；
 - 不做组合层资金预算，不保证多只买单合计小于可用现金；

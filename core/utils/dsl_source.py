@@ -556,6 +556,10 @@ class BacktestApplicationRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    market_source: Literal["daily", "snapshot"] = Field(
+        default="daily",
+        description="daily：日线合成快照；snapshot：StockSnapshot 原价五档，仅普通回测及批量队列，必须 adj=null 且 syntheticSpread=0。",
+    )
     config: dict[str, Any]
     params: dict[str, Any]
     codes_query: FactorQueryRequest | None
@@ -593,6 +597,7 @@ class BacktestApplicationRequest(BaseModel):
             self.dataset_query,
         )
         return BacktestParameters.model_validate({
+            "market_source": self.market_source,
             "config": self.config,
             "params": self.params,
             "codes_query": (
@@ -612,7 +617,9 @@ class BacktestApplicationRequest(BaseModel):
         return self.runtime_parameters().model_dump(mode="json")
 
     def stored_payload(self) -> dict[str, Any]:
-        return self.model_dump(mode="json")
+        # 缺省 daily 只参与执行，不向旧请求的原始参数补写新字段。
+        excluded = {"market_source"} if "market_source" not in self.model_fields_set else set()
+        return self.model_dump(mode="json", exclude=excluded)
 
 
 class OptimizationApplicationRequest(

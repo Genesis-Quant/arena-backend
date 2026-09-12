@@ -1,6 +1,6 @@
 # Backtest 请求
 
-Backtest 使用 Factor Query 准备候选代码和回调历史数据，将日线转换为开盘、收盘单档合成快照，并在
+Backtest 使用 Factor Query 准备候选代码和日线回调历史数据，可选择日线合成快照或真实五档快照，并在
 DolphinDB Backtest 插件中执行八个生命周期回调。本页定义请求 JSON；回调可用数据、订单、持仓、
 事件接口、执行时序和价格尺度见 `arena://docs/backtest/dolphindb`；可调用的插件函数白名单见
 `arena://docs/backtest/interfaces`。
@@ -37,6 +37,7 @@ save_version(application="backtest", project_id=..., workflow_instance_id=..., r
 
 | 字段 | 类型 | 必填 | 网页新建值 | 说明 |
 | --- | --- | --- | --- | --- |
+| `market_source` | `"daily"` 或 `"snapshot"` | 否 | `"daily"` | 日线合成或 `dfs://StockSnapshot/snapshot` 真实快照；缺省请求保持日线行为，不改写历史记录 |
 | `config` | object | 是 | 见下文 | 插件资金、费用和可开放选项；必须显式包含四项基础配置 |
 | `params` | object | 是 | 示例策略参数 | 用户回调参数，通过 `getParams()` 或 `getParam(key)` 读取；无参数时显式传 `{}` |
 | `codes_query` | FactorQuery 或 null | 是 | 指数动态池 | 字段必须存在；`null` 表示静态代码池，非空时为第一阶段候选代码查询 |
@@ -48,6 +49,18 @@ save_version(application="backtest", project_id=..., workflow_instance_id=..., r
 | `callbacks` | object | 是 | — | 必须且只能包含八个固定回调 |
 
 模型为 strict 且禁止额外顶层字段。不要把数字写成字符串。
+
+### 真实快照模式
+
+设置 `market_source="snapshot"` 时必须 `adj=null`、`config.syntheticSpread=0`（价差字段缺省也为零），
+不能配置 `stockDividend`。冲突会在 REST、MCP、Runtime Python 和 CLI 校验时报错，不会静默纠正。
+网页主动切换行情来源时只更新这三个执行配置，不转换或改写 DSL、utils、回调源码；切回日线不会
+擅自恢复旧复权设置。原价结果不含分红、送转或除权补偿，跨除权日保留价格跳变。
+
+真实快照支持普通运行、版本保存/复制、重试和批量队列，暂不支持创建手续费分析、参数敏感性、参数
+调优；Backend 和 Runtime 都会拒绝，已有报告仍可读取。仍输出四张标准 Parquet，收益指标按日收益
+计算，没有分钟净值或分钟基准。回放、分钟历史及报价缓存的完整规则见
+`arena://docs/backtest/dolphindb` 的“真实快照与分钟历史”。
 
 `config` 必须显式包含 `cash`、`commission`、`tax` 和
 `enableMinimumPerTransactionFee`。Backend 不替缺失项补值；其它受支持的插件配置可按需增加。
@@ -96,11 +109,14 @@ Backend 在生成调度器输入 JSON 时统一补全
 
 ## `dataset_query`
 
-Runtime 自动补充合成快照需要的基础因子：
+`daily` 模式自动补充合成快照需要的基础因子：
 
 ```text
 open, low, high, close, up_limit, down_limit, pre_close
 ```
+
+`snapshot` 模式仅额外读取 `pre_close/up_limit/down_limit` 作为对应日期的原价参考；不能定义同名
+derivative 覆盖参考价格。真实行情按两阶段查询的候选代码并集加载，不使用第二阶段 filters 删除行情。
 
 `adj` 非 null 时还会读取 `adj_factor`。调用方不需要把这些列重复写入 `factors`，但
 `FactorQuery` 本身仍要求 `factors` 或 `derivatives` 至少一项非空。

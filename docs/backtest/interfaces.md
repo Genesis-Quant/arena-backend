@@ -1,6 +1,6 @@
 # Backtest 接口白名单与能力矩阵
 
-本页定义 Arena 策略代码可以依赖的 `Backtest::` 接口、Runtime 独占接口，以及当前股票日频合成
+本页定义 Arena 策略代码可以依赖的 `Backtest::` 接口、Runtime 独占接口，以及当前股票
 快照模式明确不支持的接口。它不是 DolphinDB Backtest 全资产接口的转录。
 
 当前结论绑定以下运行环境：
@@ -9,7 +9,7 @@
 | --- | --- |
 | Backtest 插件 | `2.00.16.32` |
 | 验证日期 | `2026-08-25` |
-| Arena 资产与行情 | 股票、`dataType=1`、`matchingMode=1`、09:30/15:00 单档合成快照 |
+| Arena 资产与行情 | 股票、`dataType=1`、`matchingMode=1`；daily 为09:30/15:00单档合成，snapshot 为StockSnapshot五档真实 |
 | 引擎创建方式 | Runtime 使用的兼容引擎入口；返回 form 以本页实测为准 |
 
 官方完整定义见
