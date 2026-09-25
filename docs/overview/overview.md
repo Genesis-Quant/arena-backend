@@ -66,7 +66,7 @@ CallToolResult.structuredContent.result
 | --- | --- | --- |
 | Tushare 源数据字段 | [Tushare Pro 数据接口文档](https://tushare.pro/document/2) | 核对原始字段含义、单位、频率和更新说明；Arena 实际字段名、转换与填充仍以 `arena://dsl/catalog` 和 `arena://docs/overview/dsl` 为准 |
 | DolphinDB 语言与插件 | [函数参考](https://docs.dolphindb.com/zh/Functions/index.html)、[Backtest 插件总览](https://docs.dolphindb.com/zh/plugins/backtest.html) | 核对上游函数和插件能力；当前部署版本、固定配置、白名单和返回结构仍以 `arena://docs/overview/dolphindb`、`arena://docs/backtest/dolphindb` 与 `arena://docs/backtest/interfaces` 为准 |
-| Arena 实现与版本关系 | [Genesis-Quant/compose](https://github.com/Genesis-Quant/compose) | 核对 Compose、Backend、Frontend、Runtime 的具体实现；线上部署可能滞后于仓库最新提交 |
+| Arena 实现与版本关系 | [Genesis-Quant/compose](https://gitee.com/genesis-quant/arena-compose) | 核对 Compose、Backend、Frontend、Runtime 的具体实现；线上部署可能滞后于仓库最新提交 |
 
 使用 `read_arena_document(name)` 可读取同名文档；`name` 与上述 `arena://docs/*` 路径一致，例如
 `overview/workflows`。Schema 定义顶层业务对象，某个 DSL 节点的精确 `fields`、`params` 和 `on`

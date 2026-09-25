@@ -273,7 +273,7 @@ OP；源码不能自行创建同名 OP，也不能把它加入 `FILTERS`。同�
 频率、接口输入输出和更新说明。Tushare 文档是数据源语义参考，不是 Arena 请求 Schema：Worker
 可能对字段进行筛选、重命名、类型转换、时间轴对齐或组合派生，因此提交 DSL 前仍必须使用
 `arena://dsl/catalog` 确认 Arena 的实际字段名，并可在
-[Genesis-Quant/compose 开源仓库](https://github.com/Genesis-Quant/compose) 中核对具体映射实现。
+[Genesis-Quant/compose 开源仓库](https://gitee.com/genesis-quant/arena-compose) 中核对具体映射实现。
 
 派生字段没有预先存在的全局列表：它们由当前请求的 `derivatives` key 动态命名。一个算符对象中
 允许出现哪些 `fields` key、每个 key 接受列引用还是常量，由
